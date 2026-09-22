@@ -12,7 +12,7 @@
         One focusable view per dashboard control. Android Auto moves the iDrive
         rotation between focusable views; the WebView itself is a single target.
     -->
-    <FrameLayout
+    <me.aap.fermata.addon.web.KnobTargetLayout
         android:id="@+id/knobTargets"
         android:layout_width="match_parent"
         android:layout_height="match_parent"

@@ -412,7 +412,15 @@ public class FermataWebView extends WebView
 			    prev: function() { move(-1); },
 			    activate: activate,
 			    show: reveal,
-			    click: clickIndex
+			    click: clickIndex,
+			    hide: function() {
+			      ring.style.display = 'none';
+			      current = null;
+			      try {
+			        var active = document.activeElement;
+			        if (active && active !== document.body && active.blur) active.blur();
+			      } catch (e) {}
+			    }
 			  };
 			  window.addEventListener('scroll', function() { if (current) place(current); schedule(); }, true);
 			  window.addEventListener('resize', schedule);
@@ -424,6 +432,9 @@ public class FermataWebView extends WebView
 			""";
 
 	public static final String KNOB_TARGET_TAG = "homecar-knob";
+	/** Tilt left the screen, so the outline stays off until the next rotation. */
+	private boolean knobSelectionHidden;
+	private boolean knobSelectionRearm;
 
 	/**
 	 * Android Auto rotates between focusable views. The WebView is only one,
@@ -464,10 +475,14 @@ public class FermataWebView extends WebView
 				target.setDefaultFocusHighlightEnabled(false);
 				int index = i;
 				target.setOnFocusChangeListener((v, hasFocus) -> {
-					v.setBackground(hasFocus ? knobFocusDrawable() : null);
-					if (hasFocus) {
-						evaluateJavascript("window.homeCarKnob&&window.homeCarKnob.show(" + index + ")", null);
+					if (!hasFocus || (knobSelectionHidden && !knobSelectionRearm)) {
+						v.setBackground(null);
+						return;
 					}
+					knobSelectionHidden = false;
+					v.setBackground(knobFocusDrawable());
+					evaluateJavascript("window.homeCarKnob&&window.homeCarKnob.show(" + index + ")",
+							null);
 				});
 				target.setOnClickListener(v -> evaluateJavascript(
 						"window.homeCarKnob&&window.homeCarKnob.click(" + index + ")", null));
@@ -476,12 +491,11 @@ public class FermataWebView extends WebView
 			for (int i = 0; i < rows.length; i++) {
 				View cur = container.getChildAt(i);
 				View next = container.getChildAt((i + 1) % rows.length);
-				View prev = container.getChildAt((i + rows.length - 1) % rows.length);
 				cur.setNextFocusForwardId(next.getId());
-				cur.setNextFocusDownId(next.getId());
-				cur.setNextFocusRightId(next.getId());
-				cur.setNextFocusUpId(prev.getId());
-				cur.setNextFocusLeftId(prev.getId());
+				cur.setNextFocusDownId(View.NO_ID);
+				cur.setNextFocusRightId(View.NO_ID);
+				cur.setNextFocusUpId(View.NO_ID);
+				cur.setNextFocusLeftId(View.NO_ID);
 			}
 			if ((focused >= 0) && (focused < container.getChildCount())) {
 				container.getChildAt(focused).requestFocus();
@@ -514,8 +528,8 @@ public class FermataWebView extends WebView
 		float delta = event.getAxisValue(MotionEvent.AXIS_SCROLL);
 		if (delta == 0f) delta = event.getAxisValue(MotionEvent.AXIS_VSCROLL);
 		if (delta == 0f) delta = event.getAxisValue(MotionEvent.AXIS_HSCROLL);
-		if (delta == 0f) delta = event.getAxisValue(MotionEvent.AXIS_HAT_X);
 		if (delta == 0f) return false;
+		knobSelectionHidden = false;
 		int count = container.getChildCount();
 		if (count == 0) return false;
 		View focused = container.findFocus();
@@ -547,7 +561,10 @@ public class FermataWebView extends WebView
 			if (event.getAction() == KeyEvent.ACTION_UP) activateKnobFocus();
 			return true;
 		}
-		if (isKnobNudge(event.getKeyCode())) return false;
+		if (isKnobNudge(event.getKeyCode())) {
+			if (event.getAction() == KeyEvent.ACTION_DOWN) hideKnobSelection();
+			return false;
+		}
 		return super.dispatchKeyEvent(event);
 	}
 
@@ -567,6 +584,30 @@ public class FermataWebView extends WebView
 		return super.onGenericMotionEvent(event);
 	}
 
+	/**
+	 * Drop the outline when the knob tilts to another Android Auto pane.
+	 * A focus change in this same key event must not draw it again; the next
+	 * rotation may.
+	 */
+	private void hideKnobSelection() {
+		knobSelectionHidden = true;
+		knobSelectionRearm = false;
+		ViewParent parent = getParent();
+		if (parent instanceof ViewGroup group) {
+			View containerView = group.findViewById(R.id.knobTargets);
+			if (containerView instanceof ViewGroup container) {
+				for (int i = 0; i < container.getChildCount(); i++) {
+					container.getChildAt(i).setBackground(null);
+				}
+				container.clearFocus();
+			}
+		}
+		evaluateJavascript("window.homeCarKnob&&window.homeCarKnob.hide()", null);
+		post(() -> {
+			if (knobSelectionHidden) knobSelectionRearm = true;
+		});
+	}
+
 	private void moveKnobFocus(int direction) {
 		evaluateJavascript(direction > 0 ? "window.homeCarKnob&&window.homeCarKnob.next()" :
 				"window.homeCarKnob&&window.homeCarKnob.prev()", null);
@@ -581,15 +622,7 @@ public class FermataWebView extends WebView
 		if (code == KeyEvent.KEYCODE_TAB) return event.isShiftPressed() ? -1 : 1;
 		if (code == KeyEvent.KEYCODE_NAVIGATE_PREVIOUS) return -1;
 		if (code == KeyEvent.KEYCODE_NAVIGATE_NEXT) return 1;
-		if (!isRotaryKey(event)) return 0;
-		return switch (code) {
-			case KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_UP_LEFT,
-					KeyEvent.KEYCODE_SYSTEM_NAVIGATION_LEFT, KeyEvent.KEYCODE_SYSTEM_NAVIGATION_UP -> -1;
-			case KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_DOWN,
-					KeyEvent.KEYCODE_DPAD_DOWN_RIGHT, KeyEvent.KEYCODE_SYSTEM_NAVIGATION_RIGHT,
-					KeyEvent.KEYCODE_SYSTEM_NAVIGATION_DOWN -> 1;
-			default -> 0;
-		};
+		return 0;
 	}
 
 	private static boolean isKnobActivate(int keyCode) {
@@ -607,11 +640,6 @@ public class FermataWebView extends WebView
 					KeyEvent.KEYCODE_SYSTEM_NAVIGATION_RIGHT -> true;
 			default -> false;
 		};
-	}
-
-	private static boolean isRotaryKey(KeyEvent event) {
-		return (event.getSource() & InputDevice.SOURCE_ROTARY_ENCODER) ==
-				InputDevice.SOURCE_ROTARY_ENCODER;
 	}
 
 	private static boolean isRotaryMotion(MotionEvent event) {

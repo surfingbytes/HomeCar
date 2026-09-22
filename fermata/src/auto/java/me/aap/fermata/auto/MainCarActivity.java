@@ -26,7 +26,6 @@ import android.os.Bundle;
 import android.os.OperationCanceledException;
 import android.os.SystemClock;
 import android.text.TextWatcher;
-import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
@@ -406,21 +405,6 @@ public class MainCarActivity extends CarActivity implements FermataActivity {
 				return true;
 			}
 		}
-		if (nudge && isDpad(code)) {
-			View screen = findViewById(R.id.main_activity);
-			View knob = focusedKnob(screen);
-			if (knob != null) {
-				if (event.getAction() == KeyEvent.ACTION_DOWN) {
-					int dir = switch (code) {
-						case KEYCODE_DPAD_LEFT, KEYCODE_DPAD_UP, KEYCODE_DPAD_UP_LEFT,
-								KEYCODE_DPAD_DOWN_LEFT -> -1;
-						default -> 1;
-					};
-					moveKnobSibling(knob, dir);
-				}
-				return true;
-			}
-		}
 		if (!focus && !activate && !nudge) {
 			if ((event.getAction() == KeyEvent.ACTION_DOWN) && (event.getRepeatCount() == 0) &&
 					(Key.get(code) == null) && (findDashboardWebView() != null)) {
@@ -441,15 +425,7 @@ public class MainCarActivity extends CarActivity implements FermataActivity {
 			return -1;
 		if ((code == KeyEvent.KEYCODE_NAVIGATE_NEXT) || (code == KeyEvent.KEYCODE_NAVIGATE_IN))
 			return 1;
-		if ((event.getSource() & InputDevice.SOURCE_ROTARY_ENCODER) != InputDevice.SOURCE_ROTARY_ENCODER)
-			return 0;
-		return switch (code) {
-			case KEYCODE_DPAD_LEFT, KEYCODE_DPAD_UP, KEYCODE_DPAD_UP_LEFT,
-					KeyEvent.KEYCODE_SYSTEM_NAVIGATION_LEFT, KeyEvent.KEYCODE_SYSTEM_NAVIGATION_UP -> -1;
-			case KEYCODE_DPAD_RIGHT, KEYCODE_DPAD_DOWN, KEYCODE_DPAD_DOWN_RIGHT,
-					KeyEvent.KEYCODE_SYSTEM_NAVIGATION_RIGHT, KeyEvent.KEYCODE_SYSTEM_NAVIGATION_DOWN -> 1;
-			default -> 0;
-		};
+		return 0;
 	}
 
 	@Nullable
@@ -491,15 +467,6 @@ public class MainCarActivity extends CarActivity implements FermataActivity {
 		if ((index < 0) || (count < 2)) return false;
 		group.getChildAt(Math.floorMod(index + direction, count)).requestFocusFromTouch();
 		return true;
-	}
-
-	private static boolean isDpad(int keyCode) {
-		return switch (keyCode) {
-			case KEYCODE_DPAD_UP, KEYCODE_DPAD_DOWN, KEYCODE_DPAD_LEFT, KEYCODE_DPAD_RIGHT,
-					KEYCODE_DPAD_UP_LEFT, KEYCODE_DPAD_UP_RIGHT, KEYCODE_DPAD_DOWN_LEFT,
-					KEYCODE_DPAD_DOWN_RIGHT -> true;
-			default -> false;
-		};
 	}
 
 	private static boolean isKnobNudge(int keyCode) {
