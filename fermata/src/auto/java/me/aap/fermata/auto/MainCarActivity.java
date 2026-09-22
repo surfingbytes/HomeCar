@@ -36,6 +36,7 @@ import android.widget.EditText;
 import android.widget.TextView.OnEditorActionListener;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import androidx.appcompat.content.res.AppCompatResources;
 import androidx.appcompat.widget.AppCompatImageView;
 import androidx.constraintlayout.widget.ConstraintLayout;
@@ -47,6 +48,7 @@ import com.google.android.apps.auto.sdk.CarActivity;
 import com.google.android.apps.auto.sdk.CarUiController;
 
 import me.aap.fermata.R;
+import me.aap.fermata.action.Key;
 import me.aap.fermata.media.service.FermataMediaServiceConnection;
 import me.aap.fermata.ui.activity.FermataActivity;
 import me.aap.fermata.ui.activity.MainActivityDelegate;
@@ -248,6 +250,8 @@ public class MainCarActivity extends CarActivity implements FermataActivity {
 		Log.i(keyEvent);
 		MainActivityDelegate d = delegate.peek();
 		if (d == null) return super.onKeyUp(keyCode, keyEvent);
+		Boolean knob = onDashboardKnob(d, keyEvent);
+		if (knob != null) return knob;
 
 		if (d.getPrefs().useDpadCursor(d)) {
 			switch (keyCode) {
@@ -279,6 +283,8 @@ public class MainCarActivity extends CarActivity implements FermataActivity {
 		Log.i(keyEvent);
 		MainActivityDelegate d = delegate.peek();
 		if (d == null) return super.onKeyDown(keyCode, keyEvent);
+		Boolean knob = onDashboardKnob(d, keyEvent);
+		if (knob != null) return knob;
 		if (!d.getPrefs().useDpadCursor(d)) return d.onKeyDown(keyCode, keyEvent, super::onKeyDown);
 
 		float x = 0;
@@ -362,6 +368,68 @@ public class MainCarActivity extends CarActivity implements FermataActivity {
 		}
 
 		return true;
+	}
+
+	/**
+	 * @return true if HomeCar handled the event, false if Android Auto should
+	 * move between screen portions, or null to keep the normal key path
+	 */
+	@Nullable
+	private Boolean onDashboardKnob(MainActivityDelegate d, KeyEvent event) {
+		if (d.getActiveMenu() != null) return null;
+		int code = event.getKeyCode();
+		boolean focus = (code == KeyEvent.KEYCODE_TAB) || (code == KeyEvent.KEYCODE_NAVIGATE_NEXT) ||
+				(code == KeyEvent.KEYCODE_NAVIGATE_PREVIOUS);
+		boolean activate = (code == KEYCODE_DPAD_CENTER) || (code == KeyEvent.KEYCODE_ENTER) ||
+				(code == KeyEvent.KEYCODE_NUMPAD_ENTER);
+		boolean nudge = isKnobNudge(code);
+		if (!focus && !activate && !nudge) {
+			if ((event.getAction() == KeyEvent.ACTION_DOWN) && (event.getRepeatCount() == 0) &&
+					(Key.get(code) == null) && (findDashboardWebView() != null)) {
+				Log.i("Unmapped car key code=", code, " source=", event.getSource(), " scan=",
+						event.getScanCode());
+			}
+			return null;
+		}
+		WebView wv = findDashboardWebView();
+		if (wv == null) return null;
+		hideKnobCursor();
+		return wv.dispatchKeyEvent(event);
+	}
+
+	private static boolean isKnobNudge(int keyCode) {
+		return switch (keyCode) {
+			case KEYCODE_DPAD_UP, KEYCODE_DPAD_DOWN, KEYCODE_DPAD_LEFT, KEYCODE_DPAD_RIGHT,
+					KEYCODE_DPAD_UP_LEFT, KEYCODE_DPAD_UP_RIGHT, KEYCODE_DPAD_DOWN_LEFT,
+					KEYCODE_DPAD_DOWN_RIGHT, KeyEvent.KEYCODE_SYSTEM_NAVIGATION_UP,
+					KeyEvent.KEYCODE_SYSTEM_NAVIGATION_DOWN, KeyEvent.KEYCODE_SYSTEM_NAVIGATION_LEFT,
+					KeyEvent.KEYCODE_SYSTEM_NAVIGATION_RIGHT -> true;
+			default -> false;
+		};
+	}
+
+	private WebView findDashboardWebView() {
+		View screen = findViewById(R.id.main_activity);
+		return (screen == null) ? null : findVisibleWebView(screen);
+	}
+
+	private static WebView findVisibleWebView(View v) {
+		if (v.getVisibility() != View.VISIBLE) return null;
+		if (v instanceof WebView wv) {
+			if ((wv.getWidth() > 0) && (wv.getHeight() > 0)) return wv;
+		}
+		if (v instanceof ViewGroup vg) {
+			for (int i = vg.getChildCount() - 1; i >= 0; i--) {
+				WebView found = findVisibleWebView(vg.getChildAt(i));
+				if (found != null) return found;
+			}
+		}
+		return null;
+	}
+
+	private void hideKnobCursor() {
+		View cursor = findViewById(R.id.cursor);
+		if (cursor != null) cursor.setVisibility(View.GONE);
 	}
 
 	@Override

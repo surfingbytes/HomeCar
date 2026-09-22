@@ -17,6 +17,7 @@ import android.content.Context;
 import android.content.res.Configuration;
 import android.text.Editable;
 import android.util.AttributeSet;
+import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
@@ -241,12 +242,221 @@ public class FermataWebView extends WebView
 	}
 
 	protected void addFocusHighlight() {
-		evaluateJavascript("""
-				(function() {
-				  var style = document.createElement('style');
-				  style.innerHTML = ':focus {outline: 2px solid blue !important; border-radius: 5px;}';
-				  document.head.appendChild(style);
-				})()""", null);
+		if (!isCar()) {
+			evaluateJavascript("""
+					(function() {
+					  var style = document.createElement('style');
+					  style.innerHTML = ':focus {outline: 2px solid blue !important; border-radius: 5px;}';
+					  document.head.appendChild(style);
+					})()""", null);
+			return;
+		}
+		evaluateJavascript(KNOB_FOCUS_JS, null);
+	}
+
+	/**
+	 * Moves a visible ring through actionable controls, including ones inside
+	 * open shadow roots. Home Assistant dashboards keep their buttons there,
+	 * so a plain :focus rule never lands on them.
+	 */
+	private static final String KNOB_FOCUS_JS = """
+			(function() {
+			  if (window.homeCarKnob) return;
+			  var ring = document.createElement('div');
+			  ring.id = 'homecar-knob-ring';
+			  ring.setAttribute('aria-hidden', 'true');
+			  ring.style.cssText = 'position:fixed;pointer-events:none;z-index:2147483646;box-sizing:border-box;border:3px solid #1a73e8;border-radius:10px;box-shadow:0 0 0 2px #fff,0 0 0 5px rgba(0,0,0,.55);display:none;';
+			  (document.documentElement || document.body).appendChild(ring);
+			  var current = null;
+			  var roles = {button:1,switch:1,checkbox:1,link:1,tab:1,menuitem:1,option:1,radio:1,slider:1};
+			  function tagOf(el) { return (el.tagName || '').toUpperCase(); }
+			  function actionable(el) {
+			    if (!el || el.nodeType !== 1 || el === ring) return false;
+			    if (el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
+			    if (el.getAttribute('aria-hidden') === 'true') return false;
+			    var tag = tagOf(el);
+			    if (tag === 'INPUT') {
+			      var type = (el.type || '').toLowerCase();
+			      if (type === 'hidden' || type === 'file') return false;
+			      return true;
+			    }
+			    if (tag === 'BUTTON' || tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'SUMMARY') return true;
+			    if (tag === 'A' && el.hasAttribute('href')) return true;
+			    var role = el.getAttribute('role');
+			    if (role && roles[role]) return true;
+			    if (el.hasAttribute('tabindex') && el.tabIndex >= 0) return true;
+			    if (el.hasAttribute('onclick')) return true;
+			    if (/button|switch|toggle|slider|checkbox/i.test(tag)) return true;
+			    return false;
+			  }
+			  function shown(el) {
+			    var s = getComputedStyle(el);
+			    if (s.display === 'none' || s.visibility === 'hidden' || parseFloat(s.opacity) === 0) return false;
+			    var r = el.getBoundingClientRect();
+			    return r.width >= 8 && r.height >= 8;
+			  }
+			  function inside(ancestor, el) {
+			    var n = el;
+			    while (n) {
+			      if (n === ancestor) return true;
+			      if (n.parentElement) n = n.parentElement;
+			      else {
+			        var root = n.getRootNode ? n.getRootNode() : null;
+			        n = (root && root.host) ? root.host : null;
+			      }
+			    }
+			    return false;
+			  }
+			  function walk(node, out) {
+			    if (!node) return;
+			    var kids = node.children;
+			    if (!kids) return;
+			    for (var i = 0; i < kids.length; i++) {
+			      var el = kids[i];
+			      if (el.shadowRoot) walk(el.shadowRoot, out);
+			      if (actionable(el) && shown(el)) out.push(el);
+			      walk(el, out);
+			    }
+			  }
+			  function collect() {
+			    var raw = [];
+			    walk(document.body || document.documentElement, raw);
+			    var kept = [];
+			    for (var i = 0; i < raw.length; i++) {
+			      var el = raw[i];
+			      var nested = false;
+			      for (var j = 0; j < raw.length; j++) {
+			        if (raw[j] !== el && inside(el, raw[j])) { nested = true; break; }
+			      }
+			      if (!nested) kept.push(el);
+			    }
+			    kept.sort(function(a, b) {
+			      var ra = a.getBoundingClientRect();
+			      var rb = b.getBoundingClientRect();
+			      var dy = ra.top - rb.top;
+			      if (Math.abs(dy) > 8) return dy;
+			      return ra.left - rb.left;
+			    });
+			    return kept;
+			  }
+			  function place(el) {
+			    if (!el || !el.isConnected) { ring.style.display = 'none'; current = null; return; }
+			    current = el;
+			    try { el.focus({preventScroll:true}); } catch (e) { try { el.focus(); } catch (e2) {} }
+			    try { el.scrollIntoView({block:'nearest', inline:'nearest'}); } catch (e3) { el.scrollIntoView(false); }
+			    var r = el.getBoundingClientRect();
+			    ring.style.display = 'block';
+			    ring.style.left = Math.round(r.left - 4) + 'px';
+			    ring.style.top = Math.round(r.top - 4) + 'px';
+			    ring.style.width = Math.round(r.width + 8) + 'px';
+			    ring.style.height = Math.round(r.height + 8) + 'px';
+			  }
+			  function move(dir) {
+			    var items = collect();
+			    if (!items.length) { ring.style.display = 'none'; current = null; return; }
+			    var start = items.indexOf(current);
+			    var next = start < 0 ? (dir > 0 ? 0 : items.length - 1) : (start + dir + items.length) % items.length;
+			    place(items[next]);
+			  }
+			  function activate() {
+			    var items = collect();
+			    var el = (current && current.isConnected) ? current : (items.length ? items[0] : null);
+			    if (!el) return;
+			    place(el);
+			    el.click();
+			  }
+			  window.homeCarKnob = {
+			    next: function() { move(1); },
+			    prev: function() { move(-1); },
+			    activate: activate
+			  };
+			  window.addEventListener('scroll', function() { if (current) place(current); }, true);
+			  window.addEventListener('resize', function() { if (current) place(current); });
+			})();
+			""";
+
+	@Override
+	public boolean dispatchKeyEvent(KeyEvent event) {
+		if (!isCar()) return super.dispatchKeyEvent(event);
+		int direction = knobDirection(event);
+		if (direction != 0) {
+			if (event.getAction() == KeyEvent.ACTION_DOWN) moveKnobFocus(direction);
+			return true;
+		}
+		if (isKnobActivate(event.getKeyCode())) {
+			if (event.getAction() == KeyEvent.ACTION_UP) activateKnobFocus();
+			return true;
+		}
+		if (isKnobNudge(event.getKeyCode())) return false;
+		return super.dispatchKeyEvent(event);
+	}
+
+	@Override
+	public boolean onGenericMotionEvent(MotionEvent event) {
+		if (isCar() && isRotaryMotion(event)) {
+			float delta = event.getAxisValue(MotionEvent.AXIS_SCROLL);
+			if (delta == 0f) delta = event.getAxisValue(MotionEvent.AXIS_VSCROLL);
+			if (delta == 0f) delta = event.getAxisValue(MotionEvent.AXIS_HSCROLL);
+			if (delta != 0f) {
+				moveKnobFocus(delta > 0f ? 1 : -1);
+				return true;
+			}
+			Log.i("Unmapped rotary motion source=", event.getSource(), " action=",
+					event.getAction());
+		}
+		return super.onGenericMotionEvent(event);
+	}
+
+	private void moveKnobFocus(int direction) {
+		evaluateJavascript(direction > 0 ? "window.homeCarKnob&&window.homeCarKnob.next()" :
+				"window.homeCarKnob&&window.homeCarKnob.prev()", null);
+	}
+
+	private void activateKnobFocus() {
+		evaluateJavascript("window.homeCarKnob&&window.homeCarKnob.activate()", null);
+	}
+
+	private static int knobDirection(KeyEvent event) {
+		int code = event.getKeyCode();
+		if (code == KeyEvent.KEYCODE_TAB) return event.isShiftPressed() ? -1 : 1;
+		if (code == KeyEvent.KEYCODE_NAVIGATE_PREVIOUS) return -1;
+		if (code == KeyEvent.KEYCODE_NAVIGATE_NEXT) return 1;
+		if (!isRotaryKey(event)) return 0;
+		return switch (code) {
+			case KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_UP_LEFT,
+					KeyEvent.KEYCODE_SYSTEM_NAVIGATION_LEFT, KeyEvent.KEYCODE_SYSTEM_NAVIGATION_UP -> -1;
+			case KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_DOWN,
+					KeyEvent.KEYCODE_DPAD_DOWN_RIGHT, KeyEvent.KEYCODE_SYSTEM_NAVIGATION_RIGHT,
+					KeyEvent.KEYCODE_SYSTEM_NAVIGATION_DOWN -> 1;
+			default -> 0;
+		};
+	}
+
+	private static boolean isKnobActivate(int keyCode) {
+		return (keyCode == KeyEvent.KEYCODE_DPAD_CENTER) || (keyCode == KeyEvent.KEYCODE_ENTER) ||
+				(keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER);
+	}
+
+	private static boolean isKnobNudge(int keyCode) {
+		return switch (keyCode) {
+			case KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_LEFT,
+					KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_UP_LEFT,
+					KeyEvent.KEYCODE_DPAD_UP_RIGHT, KeyEvent.KEYCODE_DPAD_DOWN_LEFT,
+					KeyEvent.KEYCODE_DPAD_DOWN_RIGHT, KeyEvent.KEYCODE_SYSTEM_NAVIGATION_UP,
+					KeyEvent.KEYCODE_SYSTEM_NAVIGATION_DOWN, KeyEvent.KEYCODE_SYSTEM_NAVIGATION_LEFT,
+					KeyEvent.KEYCODE_SYSTEM_NAVIGATION_RIGHT -> true;
+			default -> false;
+		};
+	}
+
+	private static boolean isRotaryKey(KeyEvent event) {
+		return (event.getSource() & InputDevice.SOURCE_ROTARY_ENCODER) ==
+				InputDevice.SOURCE_ROTARY_ENCODER;
+	}
+
+	private static boolean isRotaryMotion(MotionEvent event) {
+		return (event.getSource() & InputDevice.SOURCE_ROTARY_ENCODER) ==
+				InputDevice.SOURCE_ROTARY_ENCODER;
 	}
 
 	protected boolean requestFullScreen() {
