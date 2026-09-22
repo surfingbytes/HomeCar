@@ -17,10 +17,16 @@ import android.content.Context;
 import android.content.res.Configuration;
 import android.text.Editable;
 import android.util.AttributeSet;
+import android.graphics.Color;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
 import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
+import android.view.ViewParent;
+import android.widget.FrameLayout;
 import android.view.inputmethod.EditorInfo;
 import android.webkit.CookieManager;
 import android.webkit.WebSettings;
@@ -103,6 +109,10 @@ public class FermataWebView extends WebView
 
 		setDesktopMode(addon, false);
 		setForceDark(addon, false);
+		if (isCar()) {
+			setFocusable(false);
+			setFocusableInTouchMode(false);
+		}
 	}
 
 	@Override
@@ -365,15 +375,165 @@ public class FermataWebView extends WebView
 			    place(el);
 			    el.click();
 			  }
+			  var reported = [];
+			  var publishTimer = 0;
+			  function publish() {
+			    var items = collect();
+			    reported = items;
+			    var parts = [];
+			    for (var i = 0; i < items.length; i++) {
+			      var r = items[i].getBoundingClientRect();
+			      parts.push(Math.round(r.left) + ',' + Math.round(r.top) + ',' + Math.round(r.width) + ',' + Math.round(r.height));
+			    }
+			    if (window.Fermata && window.Fermata.knobTargets) {
+			      window.Fermata.knobTargets(window.innerWidth | 0, window.innerHeight | 0, parts.join(';'));
+			    }
+			  }
+			  function schedule() {
+			    if (publishTimer) return;
+			    publishTimer = setTimeout(function() { publishTimer = 0; publish(); }, 200);
+			  }
+			  function reveal(i) {
+			    var el = reported[i];
+			    if (!el || !el.isConnected) return;
+			    current = el;
+			    try { el.scrollIntoView({block:'nearest', inline:'nearest'}); } catch (e) { el.scrollIntoView(false); }
+			    schedule();
+			  }
+			  function clickIndex(i) {
+			    var el = reported[i];
+			    if (!el || !el.isConnected) { publish(); el = reported[i]; }
+			    if (!el) return;
+			    place(el);
+			    el.click();
+			  }
 			  window.homeCarKnob = {
 			    next: function() { move(1); },
 			    prev: function() { move(-1); },
-			    activate: activate
+			    activate: activate,
+			    show: reveal,
+			    click: clickIndex
 			  };
-			  window.addEventListener('scroll', function() { if (current) place(current); }, true);
-			  window.addEventListener('resize', function() { if (current) place(current); });
+			  window.addEventListener('scroll', function() { if (current) place(current); schedule(); }, true);
+			  window.addEventListener('resize', schedule);
+			  if (window.MutationObserver && document.body) {
+			    new MutationObserver(schedule).observe(document.body, {subtree:true, childList:true, attributes:true});
+			  }
+			  publish();
 			})();
 			""";
+
+	public static final String KNOB_TARGET_TAG = "homecar-knob";
+
+	/**
+	 * Android Auto rotates between focusable views. The WebView is only one,
+	 * so each dashboard control gets its own transparent, focusable target.
+	 */
+	public void setKnobTargets(int innerW, int innerH, String packed) {
+		if (!isCar() || (innerW <= 0) || (innerH <= 0)) return;
+		if (getWidth() <= 0) {
+			post(() -> setKnobTargets(innerW, innerH, packed));
+			return;
+		}
+		ViewParent parent = getParent();
+		if (!(parent instanceof ViewGroup group)) return;
+		View containerView = group.findViewById(R.id.knobTargets);
+		if (!(containerView instanceof FrameLayout container)) return;
+		container.setTouchscreenBlocksFocus(false);
+		container.setOnGenericMotionListener((v, event) -> moveKnobOnMotion(container, event));
+		group.setTouchscreenBlocksFocus(false);
+		group.setOnGenericMotionListener((v, event) -> moveKnobOnMotion(container, event));
+
+		float sx = getWidth() / (float) innerW;
+		float sy = getHeight() / (float) innerH;
+		String[] rows = (packed == null || packed.isEmpty()) ? new String[0] : packed.split(";");
+		int focused = -1;
+		View currentFocus = container.findFocus();
+		if (currentFocus != null) focused = container.indexOfChild(currentFocus);
+
+		if (container.getChildCount() != rows.length) {
+			container.removeAllViews();
+			for (int i = 0; i < rows.length; i++) {
+				View target = new View(getContext());
+				target.setTag(KNOB_TARGET_TAG);
+				target.setId(View.generateViewId());
+				target.setFocusable(true);
+				target.setFocusableInTouchMode(true);
+				target.setClickable(true);
+				target.setContentDescription("Dashboard control");
+				target.setDefaultFocusHighlightEnabled(false);
+				int index = i;
+				target.setOnFocusChangeListener((v, hasFocus) -> {
+					v.setBackground(hasFocus ? knobFocusDrawable() : null);
+					if (hasFocus) {
+						evaluateJavascript("window.homeCarKnob&&window.homeCarKnob.show(" + index + ")", null);
+					}
+				});
+				target.setOnClickListener(v -> evaluateJavascript(
+						"window.homeCarKnob&&window.homeCarKnob.click(" + index + ")", null));
+				container.addView(target, new FrameLayout.LayoutParams(1, 1));
+			}
+			for (int i = 0; i < rows.length; i++) {
+				View cur = container.getChildAt(i);
+				View next = container.getChildAt((i + 1) % rows.length);
+				View prev = container.getChildAt((i + rows.length - 1) % rows.length);
+				cur.setNextFocusForwardId(next.getId());
+				cur.setNextFocusDownId(next.getId());
+				cur.setNextFocusRightId(next.getId());
+				cur.setNextFocusUpId(prev.getId());
+				cur.setNextFocusLeftId(prev.getId());
+			}
+			if ((focused >= 0) && (focused < container.getChildCount())) {
+				container.getChildAt(focused).requestFocus();
+			}
+		}
+
+		for (int i = 0; i < rows.length; i++) {
+			String[] part = rows[i].split(",");
+			if (part.length != 4) continue;
+			int left;
+			int top;
+			int width;
+			int height;
+			try {
+				left = Math.round(Integer.parseInt(part[0]) * sx);
+				top = Math.round(Integer.parseInt(part[1]) * sy);
+				width = Math.max(1, Math.round(Integer.parseInt(part[2]) * sx));
+				height = Math.max(1, Math.round(Integer.parseInt(part[3]) * sy));
+			} catch (NumberFormatException ex) {
+				continue;
+			}
+			FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(width, height);
+			lp.leftMargin = left;
+			lp.topMargin = top;
+			container.getChildAt(i).setLayoutParams(lp);
+		}
+	}
+
+	private boolean moveKnobOnMotion(ViewGroup container, MotionEvent event) {
+		float delta = event.getAxisValue(MotionEvent.AXIS_SCROLL);
+		if (delta == 0f) delta = event.getAxisValue(MotionEvent.AXIS_VSCROLL);
+		if (delta == 0f) delta = event.getAxisValue(MotionEvent.AXIS_HSCROLL);
+		if (delta == 0f) delta = event.getAxisValue(MotionEvent.AXIS_HAT_X);
+		if (delta == 0f) return false;
+		int count = container.getChildCount();
+		if (count == 0) return false;
+		View focused = container.findFocus();
+		int index = (focused == null) ? -1 : container.indexOfChild(focused);
+		int next = (index < 0) ? ((delta > 0f) ? 0 : count - 1) :
+				Math.floorMod(index + ((delta > 0f) ? 1 : -1), count);
+		container.getChildAt(next).requestFocusFromTouch();
+		return true;
+	}
+
+	private Drawable knobFocusDrawable() {
+		GradientDrawable drawable = new GradientDrawable();
+		drawable.setColor(Color.TRANSPARENT);
+		int stroke = Math.max(3, (int) (3 * getResources().getDisplayMetrics().density));
+		drawable.setStroke(stroke, 0xFF1A73E8);
+		drawable.setCornerRadius(stroke * 3f);
+		return drawable;
+	}
 
 	@Override
 	public boolean dispatchKeyEvent(KeyEvent event) {
